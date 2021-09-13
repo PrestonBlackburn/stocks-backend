@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  webcrawler
+  Sample SAM Template for webcrawler
+  Contains: function fo web scraping, function for sentiment analysis, api, and dynamodb resources 
+
+
+#Parameters for accessing GitHub Repo for Amplify Frontend
+Parameters:
+  GithubRepository:
+    Type: String
+    Description: GitHub repository URL
+  Stage:
+    Type: String
+    Description: Deployment stage
+
+
+# Resources:
+# Amplify App               - For front end
+# Amlify Branch             - Select main branch for amplify to build from
+# Amplify Role              - Creat IAM role for Amplify
+# Create Sentence Function  - Lambda web crawler/scraper
+# Analyze Sentence Function - Lambda ML sentiment nalysis
+# Stock API                 - API gateway for getting stock data (using default API for now)
+# Get Stock Data Function   - API for serving analyzed data to frontend
+# Get Weekly Data Function  - API for serving time series data to front end - I thought it would be easier to just group the data in python
+# Ticker Symbols            - Dynamodb table that holds all of the tickers to be crawled/scraped
+# New Sentences             - Dynamodb table for crawled data 
+# Processed Sentences       - Dynamodb table for processed data
+
+Resources:
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Properties:
+      Name: amplify-stock-summary-app
+      Repository: !Ref GithubRepository
+      AccessToken: '{{resolve:secretsmanager:github-token}}'
+      IAMServiceRole: !GetAtt AmplifyRole.Arn
+      EnvironmentVariables:
+        - Name: ENDPOINT
+          Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Properties:
+      BranchName: main
+      AppId: !GetAtt AmplifyApp.AppId
+      EnableAutoBuild: true
+
+  AmplifyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - amplify.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: Amplify
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: "amplify:*"
+                Resource: "*"
+
+  CreateSentenceFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: AddSentence/
+      Handler: app.lambda_handler
+      Runtime: python3.8
+      Policies:
+        - AWSLambdaDynamoDBExecutionRole
+        - AWSLambdaInvocation-DynamoDB
+        - AmazonDynamoDBFullAccess
+        - AWSLambdaBasicExecutionRole
+      Timeout: 300
+      MemorySize: 2048
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(3 days)
+
+  AnalyzeSentenceFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      PackageType: Image
+      CodeUri: SentimentAnalysis/
+      Policies:
+        - AWSLambdaDynamoDBExecutionRole
+        - AWSLambdaInvocation-DynamoDB
+        - AmazonDynamoDBFullAccess
+        - AWSLambdaBasicExecutionRole
+      Timeout: 300
+      MemorySize: 5120
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt NewSentences.StreamArn
+            BatchSize: 10
+            StartingPosition: TRIM_HORIZON
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./SentimentAnalysis
+      DockerTag: python3.8-v1
+
+#  StockApi:
+#    Type: AWS::Serverless::Api
+#    Properties:
+#      StageName: !Ref Stage
+#      Cors:
+#        AllowMethods: "'*'"
+#        AllowHeaders: "'*'"
+#        AllowOrigin: "'*'"
+
+  GetStockDataFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: GetStockData/
+      Handler: app.get_all_data_handler
+      Runtime: python3.8
+      Policies: 
+        - AmazonDynamoDBReadOnlyAccess
+      Timeout: 15
+      MemorySize: 512
+      Events:
+        GetData:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /getstocks
+            Method: GET
+  GetWeeklyDataFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: GetStockData/
+      Handler: app.get_weekly_data_handler
+      Runtime: python3.8
+      Policies: 
+        - AmazonDynamoDBReadOnlyAccess
+      Timeout: 15
+      MemorySize: 512
+      Events:
+        GetTimeSeries:
+          Type: Api
+          Properties:
+            Path: /gettimeseries
+            Method: GET
+
+  TickerSymbols:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ticker-symbols-testing-1
+      AttributeDefinitions: 
+        - AttributeName: tickerID
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: tickerID
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+    
+  NewSentences:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: crawled-data-testing-1 
+      AttributeDefinitions: 
+        - AttributeName: sentenceID
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: sentenceID
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  ProcessedSentences:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: processed-sentences-testing-1
+      AttributeDefinitions: 
+        - AttributeName: sentenceID
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: sentenceID
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+Outputs:
+  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
+  # Find out more about other implicit resources you can reference within SAM
+  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
+  GetStockDataApi:
+    Description: "API Gateway endpoint URL for Prod stage for GetStockData function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/getdata/"
+  GetWeeklyDataApi:
+    Description: "API Gateway endpoint URL for Prod stage for GetStockData function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/gettimeseries/"
+  GetStockDataFunction:
+    Description: "GetStockData Lambda Function ARN"
+    Value: !GetAtt GetStockDataFunction.Arn
+  GetWeeklyDataFunction:
+    Description: "GetStockData Lambda Function ARN"
+    Value: !GetAtt GetStockDataFunction.Arn
+  GetStockDataFunctionIamRole:
+    Description: "Implicit IAM Role created for GetStockData function"
+    Value: !GetAtt GetStockDataFunction.Arn
+  GetWeeklyDataFunctionIamRole:
+    Description: "Implicit IAM Role created for GetStockData function"
+    Value: !GetAtt GetStockDataFunction.Arn

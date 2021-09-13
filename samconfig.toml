@@ -1,0 +1,12 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "webcrawler"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-zhauda994lxz"
+s3_prefix = "webcrawler"
+region = "us-east-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+image_repositories = ["AnalyzeSentenceFunction=348278147190.dkr.ecr.us-east-2.amazonaws.com/sentiment-analysis"]
+parameter_overrides = "GithubRepository=\"https://github.com/PrestonBlackburn/stock-summary\" Stage=\"Prod\""

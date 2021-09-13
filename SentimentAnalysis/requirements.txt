@@ -1,0 +1,4 @@
+tensorflow==2.6.0
+tensorflow-text==2.6.0
+boto3
+
